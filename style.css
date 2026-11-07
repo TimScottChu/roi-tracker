@@ -82,3 +82,6 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
 .mode span { display: flex; flex-direction: column; }
 .mode small { font-size: .78rem; }
 [hidden]:not(.icon) { display: none !important; }
+textarea { width: 100%; margin-top: 2px; padding: 8px 10px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
+dialog { max-height: 85vh; overflow: auto; }
+.hist .note { white-space: pre-wrap; overflow-wrap: anywhere; }
