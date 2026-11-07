@@ -1,6 +1,6 @@
 // Bump CACHE on every release so phones pick up the new shell.
-var CACHE = 'roi-tracker-v2';
-var SHELL = ['./', 'index.html', 'style.css', 'core.js', 'app.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
+var CACHE = 'roi-tracker-v3';
+var SHELL = ['./', 'index.html', 'style.css', 'core.js', 'app.js', 'manifest.json', 'icon-192.png', 'icon-512.png', 'icon-maskable-192.png', 'icon-maskable-512.png'];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); }));
