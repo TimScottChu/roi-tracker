@@ -183,11 +183,53 @@
     return out;
   }
 
+
+  /* ---------- feedback notes (separate key; not part of the Backup JSON) ---------- */
+
+  var FKEY = 'roi_feedback_v1';
+
+  function loadFeedback(storage) {
+    storage = storage || root.localStorage;
+    try {
+      var arr = JSON.parse(storage.getItem(FKEY) || '[]');
+      if (!Array.isArray(arr)) return [];
+      return arr.filter(function (n) {
+        return n && typeof n.id === 'string' && typeof n.text === 'string' && n.text &&
+          isDate(n.date) && (n.kind === 'idea' || n.kind === 'bug');
+      });
+    } catch (e) { return []; }
+  }
+
+  function saveFeedback(list, storage) {
+    storage = storage || root.localStorage;
+    try { storage.setItem(FKEY, JSON.stringify(list)); return null; }
+    catch (e) { return 'Could not save note (storage full or blocked)'; }
+  }
+
+  function addNote(list, text, kind) {
+    var t = String(text || '').trim();
+    if (!t) return null;
+    var n = { id: uid(), date: today(), kind: kind === 'bug' ? 'bug' : 'idea', text: t };
+    list.push(n);
+    return n;
+  }
+
+  // Paste-ready batch for Claude.
+  function formatFeedback(list) {
+    if (!list.length) return '';
+    var lines = ['# ROI Tracker feedback (' + today() + ')', ''];
+    list.forEach(function (n) {
+      lines.push('- [' + n.kind + '] ' + n.date + ': ' + n.text.replace(/\r?\n/g, '\n  '));
+    });
+    return lines.join('\n') + '\n';
+  }
+
   var api = {
     KEY: KEY, VERSION: VERSION, uid: uid, today: today, emptyData: emptyData,
     calc: calc, totals: totals, validate: validate, load: load, save: save,
     addItem: addItem, findItem: findItem, addCost: addCost, addUse: addUse,
-    removeEntry: removeEntry, removeItem: removeItem, parsePresets: parsePresets
+    removeEntry: removeEntry, removeItem: removeItem, parsePresets: parsePresets,
+    FKEY: FKEY, loadFeedback: loadFeedback, saveFeedback: saveFeedback, addNote: addNote, formatFeedback: formatFeedback
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

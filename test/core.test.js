@@ -69,4 +69,23 @@ assert.strictEqual(R.parsePresets('170, abc'), null);
 // today() is local, not UTC
 assert.strictEqual(R.today(new Date(2026, 10, 7, 0, 30)), '2026-11-07');
 
+// Feedback notes
+const fst = mem();
+assert.deepStrictEqual(R.loadFeedback(fst), []);
+let fl = [];
+assert.strictEqual(R.addNote(fl, '   ', 'idea'), null);
+R.addNote(fl, 'Add monthly total', 'idea');
+R.addNote(fl, 'Line one\nline two', 'bug');
+assert.strictEqual(fl.length, 2); assert.strictEqual(fl[1].kind, 'bug');
+assert.strictEqual(R.saveFeedback(fl, fst), null);
+assert.deepStrictEqual(R.loadFeedback(fst), fl);
+const out = R.formatFeedback(fl);
+assert(out.startsWith('# ROI Tracker feedback (') && out.includes('[idea]') && out.includes('Line one\n  line two'));
+assert.strictEqual(R.formatFeedback([]), '');
+fst.setItem(R.FKEY, '{bad'); assert.deepStrictEqual(R.loadFeedback(fst), []);
+fst.setItem(R.FKEY, JSON.stringify([{ id: 'x', text: 'ok', date: '2026-01-01', kind: 'idea' }, { id: 'y', text: '', date: '2026-01-01', kind: 'idea' }, { id: 'z', text: 't', date: 'bad', kind: 'idea' }]));
+assert.strictEqual(R.loadFeedback(fst).length, 1);
+// Feedback is independent of main data
+assert.notStrictEqual(R.FKEY, R.KEY);
+
 console.log('all core tests passed');

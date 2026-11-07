@@ -351,6 +351,58 @@
     reader.readAsText(file);
   });
 
+  /* ---------- feedback notes ---------- */
+  var fb = R.loadFeedback();
+  var fbDlg = document.getElementById('feedback');
+  var fbList = document.getElementById('fb-list');
+  var fbForm = document.getElementById('fb-form');
+
+  function renderFeedback() {
+    fbList.replaceChildren();
+    fb.slice().reverse().forEach(function (n) {
+      fbList.appendChild(h('li', null,
+        h('div', { class: 'grow' },
+          h('div', { class: 'note', text: n.text }),
+          h('div', { class: 'muted', text: n.kind + ' · ' + n.date })),
+        h('button', { type: 'button', 'aria-label': 'Delete note', text: '✕', onclick: function () {
+          fb = fb.filter(function (x) { return x.id !== n.id; });
+          R.saveFeedback(fb); renderFeedback();
+        } })));
+    });
+    document.getElementById('fb-copy').disabled = !fb.length;
+    document.getElementById('fb-clear').disabled = !fb.length;
+  }
+
+  document.getElementById('open-feedback').addEventListener('click', function () {
+    menu.close(); renderFeedback(); fbDlg.showModal();
+  });
+  document.getElementById('fb-close').addEventListener('click', function () { fbDlg.close(); });
+  fbForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!R.addNote(fb, fbForm.elements.text.value, fbForm.elements.kind.value)) return;
+    var err = R.saveFeedback(fb);
+    if (err) toast(err);
+    fbForm.elements.text.value = '';
+    renderFeedback();
+  });
+  document.getElementById('fb-copy').addEventListener('click', function () {
+    var text = R.formatFeedback(fb);
+    function download() {
+      var blob = new Blob([text], { type: 'text/plain' });
+      var a = h('a', { href: URL.createObjectURL(blob), download: 'roi-tracker-feedback-' + R.today() + '.txt' });
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+      toast('Clipboard blocked; downloaded as .txt');
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { toast('Copied ' + fb.length + ' notes'); }, download);
+    } else download();
+  });
+  document.getElementById('fb-clear').addEventListener('click', function () {
+    if (!confirm('Delete all ' + fb.length + ' notes? Copy them first.')) return;
+    fb = []; R.saveFeedback(fb); renderFeedback();
+  });
+
   /* ---------- service worker ---------- */
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', function () {
