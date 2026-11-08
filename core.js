@@ -96,7 +96,7 @@
       rate: cm > 0 ? cc / cm : null,           // cost per meal over closed batches
       avgRef: cm > 0 ? cv / cm : null,         // average reference price of those meals
       savedClosed: cv - cc,
-      hasOpen: !!open, openCost: open ? open.cost : 0, openMeals: open ? open.meals : 0,
+      hasOpen: !!open, openCost: open ? open.cost : 0, openMeals: open ? open.meals : 0, openValue: open ? open.value : 0,
       openSince: open ? open.date : null, unassigned: unassigned
     };
   }
