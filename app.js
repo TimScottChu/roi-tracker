@@ -119,19 +119,23 @@
 
     data.items.filter(function (it) { return filter === 'all' || it.mode === filter; }).forEach(function (it) {
       var c = R.calc(it);
-      var sub;
+      var sub, right;
       if (it.mode === 'track') {
-        var base = it.baseline != null ? it.baseline : c.avgValue;
-        if (c.count === 0) sub = 'No uses yet';
-        else if (c.runningPerUse == null) sub = c.count + ' uses · no running costs yet';
-        else sub = fmt(c.runningPerUse) + '/use vs ' + fmt(base) + ' baseline · ' + c.count + ' uses';
+        var tr = c.track;
+        if (tr.rate != null) {
+          right = h('span', { class: 'big ' + (tr.rate <= tr.avgRef ? 'good' : 'bad'), text: fmt(tr.rate) + '/use' });
+          sub = tr.closedMeals + ' uses · saved ' + fmtSigned(tr.savedClosed) + ' · ' + (tr.hasOpen ? tr.openMeals + ' in progress' : 'avg ref ' + fmt(tr.avgRef));
+        } else {
+          right = h('span', { class: 'big muted', text: '–' });
+          sub = tr.hasOpen ? 'First batch in progress · ' + tr.openMeals + ' uses logged' : 'Log a running cost (groceries, beans) to start';
+        }
       } else if (c.invested === 0) sub = 'No costs yet';
       else if (c.brokeEven) sub = 'Paid off ✓ ' + c.count + ' uses';
       else sub = Math.round(c.progress * 100) + '% to break-even · ' + fmt(c.remaining) + ' to go';
       app.appendChild(h('a', { class: 'card item', href: '#/item/' + it.id },
         h('div', { class: 'row' },
           h('span', { class: 'name' }, it.name + ' ', h('span', { class: 'tag', text: it.mode === 'track' ? 'Tracking' : 'ROI' })),
-          h('span', { class: 'big ' + cls(c.net), text: fmtSigned(c.net) })),
+          right || h('span', { class: 'big ' + cls(c.net), text: fmtSigned(c.net) })),
         h('div', { class: 'muted', text: sub }),
         it.mode === 'roi' ? progressBar(c) : null));
     });
@@ -149,8 +153,9 @@
         field('Quick-tap savings per use (optional, comma separated)',
           h('input', { name: 'presets', placeholder: '170, 250', inputmode: 'text' }))),
       h('div', { 'data-for': 'track', hidden: true },
-        field('Baseline cost per use (what it would cost otherwise)',
-          h('input', { name: 'baseline', type: 'number', inputmode: 'decimal', min: '0', step: 'any', placeholder: '189' }))),
+        field('Reference prices: what one use would cost otherwise (name price, comma separated)',
+          h('input', { name: 'refs', placeholder: 'Konbini 550, Restaurant 1200', inputmode: 'text' })),
+        h('p', { class: 'muted', text: 'Log groceries or beans as Running costs. Per-use cost is computed over closed batches (each purchase until the next).' })),
       field('First cost (optional)', h('input', { name: 'cost', type: 'number', inputmode: 'decimal', min: '0', step: 'any', placeholder: '45000' })),
       field('First cost type', h('select', { name: 'kind' },
         h('option', { value: 'capex', text: 'Capex (one-off purchase)' }),
@@ -165,15 +170,15 @@
     e.preventDefault();
     var f = e.target;
     var mode = val(f, 'mode');
-    var presets = [], baseline = null;
+    var presets = [], refs = null;
     if (mode === 'track') {
-      baseline = Number(val(f, 'baseline'));
-      if (val(f, 'baseline') === '' || !isFinite(baseline) || baseline < 0) { toast('Enter a baseline cost per use'); return; }
+      refs = R.parseReferences(val(f, 'refs'));
+      if (!refs || !refs.length) { toast('Enter reference prices like "Konbini 550"'); return; }
     } else {
       presets = R.parsePresets(val(f, 'presets'));
       if (!presets) { toast('Quick-tap values must be numbers'); return; }
     }
-    var it = R.addItem(data, val(f, 'name'), presets, mode, baseline);
+    var it = R.addItem(data, val(f, 'name'), presets, mode, refs);
     var cost = val(f, 'cost');
     if (cost !== '') {
       var amt = Number(cost);
@@ -192,57 +197,87 @@
     app.replaceChildren();
 
     /* summary */
-    var stats = h('div', { class: 'stats' },
-      h('div', null, h('span', { class: 'muted', text: 'Saved' }), h('b', { text: fmt(c.value) })),
-      h('div', null, h('span', { class: 'muted', text: 'Spent' }), h('b', { text: fmt(c.invested) + (c.capex && c.running ? ' (capex ' + fmt(c.capex) + ')' : '') })),
-      h('div', null, h('span', { class: 'muted', text: 'Uses' }), h('b', { text: String(c.count) })),
-      h('div', null, h('span', { class: 'muted', text: 'Avg value / use' }), h('b', { text: c.avgValue == null ? '–' : fmt(c.avgValue) })));
-    if (c.runningPerUse != null) {
-      stats.appendChild(h('div', null, h('span', { class: 'muted', text: 'Running cost / use' }),
-        h('b', { text: fmt(c.runningPerUse) + (c.avgValue != null ? (c.runningPerUse <= c.avgValue ? ' ✓ below' : ' ✗ above') + ' avg value' : '') })));
-    }
     var track = it.mode === 'track';
-    var status;
+    var stats, status, headline, headCls = '', headLabel;
     if (track) {
-      if (c.vsBaseline == null) status = c.count ? 'Add a running cost to compare with the baseline' : 'Log a use to start';
-      else status = fmt(Math.abs(c.vsBaseline)) + ' per use ' + (c.vsBaseline >= 0 ? 'cheaper' : 'pricier') +
-        ' than the ' + fmt(it.baseline) + ' baseline';
+      var tr = c.track;
+      headLabel = 'Cost per use (closed batches)';
+      headline = tr.rate != null ? fmt(tr.rate) : '–';
+      if (tr.rate != null) {
+        var diff = tr.avgRef - tr.rate;
+        headCls = diff >= 0 ? 'good' : 'bad';
+        status = fmt(Math.abs(diff)) + ' per use ' + (diff >= 0 ? 'cheaper' : 'pricier') + ' than your references (avg ' + fmt(tr.avgRef) + ')';
+      } else if (tr.hasOpen) status = 'No closed batch yet. Logging your next running cost closes the first one.';
+      else status = 'Log a running cost (groceries, beans) to start.';
+      stats = h('div', { class: 'stats' },
+        h('div', null, h('span', { class: 'muted', text: 'Uses logged' }), h('b', { text: String(c.count) })),
+        h('div', null, h('span', { class: 'muted', text: 'Saved (closed batches)' }), h('b', { text: fmtSigned(tr.savedClosed) })),
+        h('div', null, h('span', { class: 'muted', text: 'Closed batches' }), h('b', { text: String(tr.closedBatches) + ' · ' + tr.closedMeals + ' uses' })),
+        h('div', null, h('span', { class: 'muted', text: 'In progress' }),
+          h('b', { text: tr.hasOpen ? fmt(tr.openCost) + ' · ' + tr.openMeals + ' uses since ' + tr.openSince : '–' })));
+      if (c.capex) stats.appendChild(h('div', null, h('span', { class: 'muted', text: 'Capex (not in per-use cost)' }), h('b', { text: fmt(c.capex) })));
+      if (tr.unassigned) stats.appendChild(h('div', null, h('span', { class: 'muted', text: 'Before first purchase' }), h('b', { text: tr.unassigned + ' uses (not counted)' })));
     } else {
+      headLabel = 'Net';
+      headline = fmtSigned(c.net); headCls = cls(c.net);
       status = c.invested === 0 ? 'Add a cost to start' :
         c.brokeEven ? 'Paid off' : Math.round(c.progress * 100) + '% to break-even · ' + fmt(c.remaining) + ' to go';
+      stats = h('div', { class: 'stats' },
+        h('div', null, h('span', { class: 'muted', text: 'Saved' }), h('b', { text: fmt(c.value) })),
+        h('div', null, h('span', { class: 'muted', text: 'Spent' }), h('b', { text: fmt(c.invested) + (c.capex && c.running ? ' (capex ' + fmt(c.capex) + ')' : '') })),
+        h('div', null, h('span', { class: 'muted', text: 'Uses' }), h('b', { text: String(c.count) })),
+        h('div', null, h('span', { class: 'muted', text: 'Avg value / use' }), h('b', { text: c.avgValue == null ? '–' : fmt(c.avgValue) })));
     }
     app.appendChild(h('div', { class: 'card' },
-      h('div', { class: 'row' }, h('span', { class: 'muted', text: track ? 'Saved vs baseline' : 'Net' }),
+      h('div', { class: 'row' }, h('span', { class: 'muted', text: headLabel }),
         h('span', { class: 'tag', text: track ? 'Tracking' : 'ROI' })),
-      h('div', { class: 'big ' + cls(c.net), text: fmtSigned(c.net) }),
-      h('div', { class: 'muted ' + (track && c.vsBaseline != null ? cls(c.vsBaseline) : ''), text: status }),
+      h('div', { class: 'big ' + headCls, text: headline }),
+      h('div', { class: 'muted ' + headCls, text: status }),
       track ? null : progressBar(c), stats));
 
     /* log use */
     var useCard = h('div', { class: 'card' }, h('h2', { text: 'Log a use' }));
-    if (it.presets.length) {
-      var chips = h('div', { class: 'chips' });
+    var chips = h('div', { class: 'chips' });
+    if (track) {
+      it.references.forEach(function (r) {
+        chips.appendChild(h('button', { class: 'chip', type: 'button', text: r.name + ' ' + fmt(r.value), onclick: function () {
+          R.addUse(it, { value: r.value, qty: 1, refName: r.name });
+          if (persist()) { toast('Logged vs ' + r.name); renderDetail(id); }
+        } }));
+      });
+      if (!it.references.length) useCard.appendChild(h('p', { class: 'muted', text: 'Add reference prices under Edit item.' }));
+    } else {
       it.presets.forEach(function (p) {
         chips.appendChild(h('button', { class: 'chip', type: 'button', text: '+' + fmt(p), onclick: function () {
           R.addUse(it, { value: p, qty: 1 });
           if (persist()) { toast('Logged ' + fmt(p)); renderDetail(id); }
         } }));
       });
-      useCard.appendChild(chips);
     }
+    if (chips.childNodes.length) useCard.appendChild(chips);
     var uf = h('form', { onsubmit: function (e) {
       e.preventDefault();
-      var f = e.target, v = Number(val(f, 'value')), q = Number(val(f, 'qty') || 1);
+      var f = e.target, q = Number(val(f, 'qty') || 1), v, refName = '';
+      if (track) {
+        var ref = it.references.filter(function (r) { return r.id === val(f, 'ref'); })[0];
+        if (!ref) { toast('Pick a reference'); return; }
+        v = ref.value; refName = ref.name;
+      } else v = Number(val(f, 'value'));
       if (!isFinite(v) || v < 0 || !isFinite(q) || q <= 0) { toast('Check value and quantity'); return; }
-      R.addUse(it, { value: v, qty: q, date: val(f, 'date'), note: val(f, 'note') });
-      if (persist()) { toast('Logged ' + fmt(v * q)); renderDetail(id); }
+      R.addUse(it, { value: v, qty: q, date: val(f, 'date'), note: val(f, 'note'), refName: refName });
+      if (persist()) { toast('Logged ' + q + ' use' + (q === 1 ? '' : 's')); renderDetail(id); }
     } },
-      h('div', { class: 'grid2' }, field(track ? 'Value per use (baseline)' : 'Savings per use', (function () { var i = numInput('value', '189'); if (track && it.baseline != null) i.value = String(it.baseline); return i; })()),
+      h('div', { class: 'grid2' },
+        track ? field('Reference', (function () {
+          var sel = h('select', { name: 'ref' });
+          it.references.forEach(function (r) { sel.appendChild(h('option', { value: r.id, text: r.name + ' ' + fmt(r.value) })); });
+          return sel;
+        })()) : field('Savings per use', numInput('value', '189')),
         field('Quantity', h('input', { name: 'qty', type: 'number', inputmode: 'decimal', min: '0.01', step: 'any', value: '1', required: true }))),
       h('div', { class: 'grid2' }, field('Date', dateInput('date')),
         field('Note (optional)', h('input', { name: 'note', maxlength: '80' }))),
-      h('button', { class: 'btn secondary', type: 'submit', text: 'Log custom use' }));
-    useCard.appendChild(h('details', { open: !it.presets.length }, h('summary', { text: 'Custom amount' }), uf));
+      h('button', { class: 'btn secondary', type: 'submit', text: track ? 'Log uses' : 'Log custom use' }));
+    useCard.appendChild(h('details', { open: !chips.childNodes.length }, h('summary', { text: track ? 'Several uses / past date' : 'Custom amount' }), uf));
     app.appendChild(useCard);
 
     /* add cost */
@@ -269,7 +304,7 @@
     var list = h('ul', { class: 'hist' });
     entries.forEach(function (x) {
       var e = x.e, isCost = x.t === 'costs';
-      var label = isCost ? (e.kind === 'capex' ? 'Capex' : 'Running') : ('Use' + (e.qty !== 1 ? ' ×' + e.qty : ''));
+      var label = isCost ? (e.kind === 'capex' ? 'Capex' : 'Running') : ('Use' + (e.refName ? ' · ' + e.refName : '') + (e.qty !== 1 ? ' ×' + e.qty : ''));
       var amount = isCost ? e.amount : e.value * e.qty;
       list.appendChild(h('li', null,
         h('div', { class: 'grow' }, h('div', { text: label + (e.note ? ' · ' + e.note : '') }), h('div', { class: 'muted', text: e.date })),
@@ -288,13 +323,13 @@
       e.preventDefault();
       var f = e.target, m = val(f, 'mode');
       if (m === 'track') {
-        var b = Number(val(f, 'baseline'));
-        if (val(f, 'baseline') === '' || !isFinite(b) || b < 0) { toast('Enter a baseline cost per use'); return; }
-        it.baseline = b; it.presets = [b];
+        var refs = R.parseReferences(val(f, 'refs'));
+        if (!refs || !refs.length) { toast('Enter reference prices like "Konbini 550"'); return; }
+        R.setReferences(it, refs); it.presets = [];
       } else {
         var p = R.parsePresets(val(f, 'presets'));
         if (!p) { toast('Quick-tap values must be numbers'); return; }
-        it.baseline = null; it.presets = p;
+        it.presets = p; it.references = [];
       }
       it.mode = m; it.name = val(f, 'name').trim();
       if (persist()) { toast('Saved (past entries keep their values)'); renderDetail(id); }
@@ -304,7 +339,7 @@
       h('div', { 'data-for': 'roi' },
         field('Quick-tap savings per use (comma separated)', h('input', { name: 'presets', value: it.mode === 'roi' ? it.presets.join(', ') : '' }))),
       h('div', { 'data-for': 'track' },
-        field('Baseline cost per use', h('input', { name: 'baseline', type: 'number', inputmode: 'decimal', min: '0', step: 'any', value: it.baseline != null ? String(it.baseline) : '' }))),
+        field('Reference prices (name price, comma separated)', h('input', { name: 'refs', value: R.refsToText(it.references) }))),
       h('button', { class: 'btn secondary', type: 'submit', text: 'Save changes' }),
       h('button', { class: 'btn danger', type: 'button', text: 'Delete item', onclick: function () {
         if (!confirm('Delete "' + it.name + '" and all its entries?')) return;

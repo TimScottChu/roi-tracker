@@ -45,7 +45,7 @@
       count += u.qty;
     });
     var invested = capex + running;
-    return {
+    var out = {
       capex: capex,
       running: running,
       invested: invested,
@@ -55,11 +55,49 @@
       progress: invested > 0 ? value / invested : null,
       remaining: Math.max(0, invested - value),
       brokeEven: invested > 0 && value >= invested,
-      avgValue: count > 0 ? value / count : null,
-      // actual running cost per use (coffee brew, home meal)
-      runningPerUse: count > 0 && running > 0 ? running / count : null,
-      // Tracking mode: how much cheaper than the baseline each use is (negative = pricier)
-      vsBaseline: item.baseline != null && count > 0 && running > 0 ? item.baseline - running / count : null
+      avgValue: count > 0 ? value / count : null
+    };
+    // What counts toward totals: ROI items use everything; Tracking items use closed batches only.
+    out.settledValue = value; out.settledCost = invested; out.settledNet = out.net;
+    if (item.mode === 'track') {
+      var t = batches(item);
+      out.track = t;
+      out.settledValue = t.closedValue;
+      out.settledCost = t.closedCost + capex;
+      out.settledNet = t.closedValue - t.closedCost - capex;
+    }
+    return out;
+  }
+
+  // Tracking items: a batch = meals logged from one running-cost date until the next one.
+  // Only closed batches (followed by a later purchase) feed the per-meal rate, so a fresh
+  // grocery run does not inflate the rate before the food is eaten. Capex is excluded.
+  function batches(item) {
+    var byDate = {};
+    (item.costs || []).forEach(function (c) {
+      if (c.kind === 'running') byDate[c.date] = (byDate[c.date] || 0) + c.amount;
+    });
+    var groups = Object.keys(byDate).sort().map(function (d) {
+      return { date: d, cost: byDate[d], meals: 0, value: 0 };
+    });
+    var unassigned = 0;
+    (item.uses || []).forEach(function (u) {
+      var idx = -1;
+      for (var i = 0; i < groups.length; i++) { if (groups[i].date <= u.date) idx = i; else break; }
+      if (idx < 0) unassigned += u.qty;
+      else { groups[idx].meals += u.qty; groups[idx].value += u.value * u.qty; }
+    });
+    var closed = groups.slice(0, -1);
+    var open = groups.length ? groups[groups.length - 1] : null;
+    var cc = 0, cm = 0, cv = 0;
+    closed.forEach(function (g) { cc += g.cost; cm += g.meals; cv += g.value; });
+    return {
+      closedBatches: closed.length, closedCost: cc, closedMeals: cm, closedValue: cv,
+      rate: cm > 0 ? cc / cm : null,           // cost per meal over closed batches
+      avgRef: cm > 0 ? cv / cm : null,         // average reference price of those meals
+      savedClosed: cv - cc,
+      hasOpen: !!open, openCost: open ? open.cost : 0, openMeals: open ? open.meals : 0,
+      openSince: open ? open.date : null, unassigned: unassigned
     };
   }
 
@@ -67,8 +105,9 @@
     var t = { net: 0, value: 0, invested: 0 };
     data.items.forEach(function (it) {
       var c = calc(it);
-      t.net += c.net; t.value += c.value; t.invested += c.invested;
+      t.value += c.settledValue; t.invested += c.settledCost;
     });
+    t.net = t.value - t.invested;
     return t;
   }
 
@@ -78,12 +117,27 @@
     if (!raw || typeof raw !== 'object') return null;
     if (typeof raw.id !== 'string' || !raw.id) return null;
     if (typeof raw.name !== 'string' || !raw.name.trim()) return null;
-    var item = { id: raw.id, name: raw.name.trim(), mode: raw.mode === 'track' ? 'track' : 'roi',
-      baseline: num(raw.baseline) && raw.baseline >= 0 ? raw.baseline : null, presets: [], costs: [], uses: [] };
-    if (Array.isArray(raw.presets)) {
-      raw.presets.forEach(function (p) {
-        if (num(p) && p >= 0) item.presets.push(p);
-      });
+    var mode = raw.mode === 'track' ? 'track' : 'roi';
+    var item = { id: raw.id, name: raw.name.trim(), mode: mode, references: [], presets: [], costs: [], uses: [] };
+    if (mode === 'roi') {
+      if (Array.isArray(raw.presets)) {
+        raw.presets.forEach(function (p) {
+          if (num(p) && p >= 0) item.presets.push(p);
+        });
+      }
+    } else {
+      if (Array.isArray(raw.references)) {
+        for (var k = 0; k < raw.references.length; k++) {
+          var r = raw.references[k];
+          if (!r || typeof r.id !== 'string' || !r.id || typeof r.name !== 'string' || !r.name.trim() ||
+              !num(r.value) || r.value < 0) return null;
+          item.references.push({ id: r.id, name: r.name.trim().slice(0, 30), value: r.value });
+        }
+      }
+      // v2.1 and earlier: a single `baseline` becomes the first reference
+      if (!item.references.length && num(raw.baseline) && raw.baseline >= 0) {
+        item.references.push({ id: 'ref-baseline', name: 'Baseline', value: raw.baseline });
+      }
     }
     if (!Array.isArray(raw.costs) || !Array.isArray(raw.uses)) return null;
     for (var i = 0; i < raw.costs.length; i++) {
@@ -98,7 +152,8 @@
       if (!u || typeof u.id !== 'string' || !num(u.value) || u.value < 0 ||
           !num(u.qty) || u.qty <= 0 || !isDate(u.date)) return null;
       item.uses.push({ id: u.id, date: u.date, value: u.value, qty: u.qty,
-        note: typeof u.note === 'string' ? u.note : '' });
+        note: typeof u.note === 'string' ? u.note : '',
+        refName: typeof u.refName === 'string' ? u.refName.slice(0, 30) : '' });
     }
     return item;
   }
@@ -140,12 +195,13 @@
 
   /* ---------- mutations (return new state; caller saves) ---------- */
 
-  // mode: 'roi' (pay back a purchase) or 'track' (compare unit cost to a baseline per use)
-  function addItem(data, name, presets, mode, baseline) {
+  // mode: 'roi' (pay back a purchase) or 'track' (cost per use vs reference prices).
+  // refs (track only): [{ name, value }]
+  function addItem(data, name, presets, mode, refs) {
     var track = mode === 'track';
     var it = { id: uid(), name: name.trim(), mode: track ? 'track' : 'roi',
-      baseline: track && baseline != null ? baseline : null,
-      presets: track ? (baseline != null ? [baseline] : []) : (presets || []), costs: [], uses: [] };
+      references: track ? (refs || []).map(function (r) { return { id: uid(), name: r.name, value: r.value }; }) : [],
+      presets: track ? [] : (presets || []), costs: [], uses: [] };
     data.items.push(it);
     return it;
   }
@@ -160,7 +216,8 @@
   }
 
   function addUse(item, o) {
-    item.uses.push({ id: uid(), date: o.date || today(), value: o.value, qty: o.qty || 1, note: o.note || '' });
+    item.uses.push({ id: uid(), date: o.date || today(), value: o.value, qty: o.qty || 1, note: o.note || '',
+      refName: o.refName || '' });
   }
 
   function removeEntry(item, listName, id) {
@@ -183,6 +240,32 @@
     return out;
   }
 
+
+  // "Konbini 550, Restaurant 1200" -> [{name, value}]; a lone number becomes "Baseline". null if invalid.
+  function parseReferences(text) {
+    var toks = String(text || '').replace(/[¥￥]/g, '').split(/[,\n]+/)
+      .map(function (t) { return t.trim(); }).filter(Boolean);
+    var out = [];
+    for (var i = 0; i < toks.length; i++) {
+      var m = /^(.*?)[\s:=]*(\d+(?:\.\d+)?)$/.exec(toks[i]);
+      if (!m) return null;
+      var name = m[1].trim();
+      if (!name) name = toks.length === 1 ? 'Baseline' : 'Reference ' + (i + 1);
+      out.push({ name: name.slice(0, 30), value: Number(m[2]) });
+    }
+    return out;
+  }
+
+  function refsToText(refs) {
+    return (refs || []).map(function (r) { return r.name + ' ' + r.value; }).join(', ');
+  }
+
+  // Replace an item's references, keeping ids for names that already existed.
+  function setReferences(item, parsed) {
+    var old = {};
+    (item.references || []).forEach(function (r) { old[r.name] = r.id; });
+    item.references = parsed.map(function (r) { return { id: old[r.name] || uid(), name: r.name, value: r.value }; });
+  }
 
   /* ---------- feedback notes (separate key; not part of the Backup JSON) ---------- */
 
@@ -229,6 +312,7 @@
     calc: calc, totals: totals, validate: validate, load: load, save: save,
     addItem: addItem, findItem: findItem, addCost: addCost, addUse: addUse,
     removeEntry: removeEntry, removeItem: removeItem, parsePresets: parsePresets,
+    parseReferences: parseReferences, refsToText: refsToText, setReferences: setReferences,
     FKEY: FKEY, loadFeedback: loadFeedback, saveFeedback: saveFeedback, addNote: addNote, formatFeedback: formatFeedback
   };
 
