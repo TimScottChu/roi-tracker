@@ -126,8 +126,13 @@
           right = h('span', { class: 'big ' + (tr.rate <= tr.avgRef ? 'good' : 'bad'), text: fmt(tr.rate) + '/use' });
           sub = tr.closedMeals + ' uses · saved ' + fmtSigned(tr.savedClosed) + ' · ' + (tr.hasOpen ? tr.openMeals + ' in progress' : 'avg ref ' + fmt(tr.avgRef));
         } else {
-          right = h('span', { class: 'big muted', text: '–' });
-          sub = tr.hasOpen ? 'First batch in progress · ' + tr.openMeals + ' uses logged' : 'Log a running cost (groceries, beans) to start';
+          if (tr.hasOpen && tr.openMeals > 0) {
+            right = h('span', { class: 'big muted', text: '~' + fmt(tr.openCost / tr.openMeals) + '/use' });
+            sub = 'Provisional · ' + tr.openMeals + ' uses so far in the first batch';
+          } else {
+            right = h('span', { class: 'big muted', text: '–' });
+            sub = tr.hasOpen ? 'First batch in progress · no uses logged yet' : 'Log a running cost (groceries, beans) to start';
+          }
         }
       } else if (c.invested === 0) sub = 'No costs yet';
       else if (c.brokeEven) sub = 'Paid off ✓ ' + c.count + ' uses';
@@ -207,14 +212,18 @@
         var diff = tr.avgRef - tr.rate;
         headCls = diff >= 0 ? 'good' : 'bad';
         status = fmt(Math.abs(diff)) + ' per use ' + (diff >= 0 ? 'cheaper' : 'pricier') + ' than your references (avg ' + fmt(tr.avgRef) + ')';
-      } else if (tr.hasOpen) status = 'No closed batch yet. Logging your next running cost closes the first one.';
+      } else if (tr.hasOpen && tr.openMeals > 0) {
+        headLabel = 'Cost per use (so far, provisional)';
+        headline = '~' + fmt(tr.openCost / tr.openMeals); headCls = 'muted';
+        status = 'This shop\'s cost ÷ uses so far (avg reference ' + fmt(tr.openValue / tr.openMeals) + '). It falls as you eat more of it. Log your next shop to lock the final rate.';
+      } else if (tr.hasOpen) status = 'No uses logged yet. Log a meal, or your next shop to close this batch.';
       else status = 'Log a running cost (groceries, beans) to start.';
       stats = h('div', { class: 'stats' },
         h('div', null, h('span', { class: 'muted', text: 'Uses logged' }), h('b', { text: String(c.count) })),
         h('div', null, h('span', { class: 'muted', text: 'Saved (closed batches)' }), h('b', { text: fmtSigned(tr.savedClosed) })),
         h('div', null, h('span', { class: 'muted', text: 'Closed batches' }), h('b', { text: String(tr.closedBatches) + ' · ' + tr.closedMeals + ' uses' })),
         h('div', null, h('span', { class: 'muted', text: 'In progress' }),
-          h('b', { text: tr.hasOpen ? fmt(tr.openCost) + ' · ' + tr.openMeals + ' uses since ' + tr.openSince : '–' })));
+          h('b', { text: tr.hasOpen ? fmt(tr.openCost) + ' · ' + tr.openMeals + ' uses since ' + tr.openSince + (tr.openMeals > 0 ? ' (~' + fmt(tr.openCost / tr.openMeals) + '/use so far)' : '') : '–' })));
       if (c.capex) stats.appendChild(h('div', null, h('span', { class: 'muted', text: 'Capex (not in per-use cost)' }), h('b', { text: fmt(c.capex) })));
       if (tr.unassigned) stats.appendChild(h('div', null, h('span', { class: 'muted', text: 'Before first purchase' }), h('b', { text: tr.unassigned + ' uses (not counted)' })));
     } else {

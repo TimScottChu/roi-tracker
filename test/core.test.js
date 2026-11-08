@@ -86,6 +86,7 @@ assert(Math.abs(c.track.avgRef - 4600 / 6) < 1e-9);
 assert.strictEqual(c.track.savedClosed, 1600);
 assert.strictEqual(c.track.openCost, 2500); assert.strictEqual(c.track.openMeals, 3); assert.strictEqual(c.track.openSince, '2026-11-07');
 assert.strictEqual(c.track.unassigned, 1);
+assert.strictEqual(c.track.openValue, 3 * 550);
 assert.strictEqual(c.settledNet, 4600 - 3000 - 50000);                    // capex counted, open batch not
 assert.strictEqual(R.totals(d2).net, 4600 - 3000 - 50000);
 // No purchases at all: meals counted, no batches
