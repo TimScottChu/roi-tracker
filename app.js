@@ -122,15 +122,13 @@
       var c = R.calc(it);
       var sub, right;
       if (it.mode === 'track') {
-        var tr = c.track, pend = tr.pendingUses > 0 ? ' · ' + tr.pendingUses + ' pending' : '';
+        var tr = c.track;
         if (tr.rate != null) {
           right = h('span', { class: 'big ' + (tr.rate <= tr.avgRef ? 'good' : 'bad'), text: fmt(tr.rate) + '/use' });
-          sub = tr.countedUses + ' uses · saved ' + fmtSigned(tr.saved) + pend;
+          sub = tr.uses + ' uses · saved ' + fmtSigned(tr.saved) + (tr.canIncludeCapex ? ' · capex pending' : '');
         } else {
           right = h('span', { class: 'big muted', text: '–' });
-          sub = (tr.canIncludeRunning || tr.canIncludeCapex)
-            ? 'Pending ' + fmt(tr.pendingRunning + tr.pendingCapex) + ' · ' + tr.pendingUses + ' uses. Open to include.'
-            : 'Log a cost (groceries, beans) and meals to start';
+          sub = 'Log a cost (groceries, beans) and meals to start';
         }
       } else if (c.invested === 0) sub = 'No costs yet';
       else if (c.brokeEven) sub = 'Paid off ✓ ' + c.count + ' uses';
@@ -207,7 +205,7 @@
       var f = e.target, a = Number(val(f, 'amount'));
       if (!isFinite(a) || a < 0) { toast('Invalid amount'); return; }
       R.addCost(it, { amount: a, kind: val(f, 'kind'), date: val(f, 'date'), note: val(f, 'note') });
-      if (persist()) { sheet.close(); toast(track ? 'Cost added (pending)' : 'Cost added'); renderDetail(id); }
+      if (persist()) { sheet.close(); toast('Cost added'); renderDetail(id); }
     } },
       h('div', { class: 'grid2' }, field('Amount', numInput('amount', '3000')),
         field('Type', (function () {
@@ -302,23 +300,20 @@
       summary.appendChild(h('div', { class: 'row' }, h('span', { class: 'muted', text: 'Running Unit Cost' }),
         h('span', { class: 'row-tools' },
           tr.canUndo ? h('button', { class: 'mini', type: 'button', text: 'Undo include', onclick: function () {
-            var k = R.undoSettle(it); if (k && persist()) { toast('Undid last include (' + k + ')'); renderDetail(id); }
+            if (R.undoSettle(it) && persist()) { toast('Undid last capex include'); renderDetail(id); }
           } }) : null,
           h('span', { class: 'tag', text: 'Tracking' }))));
       summary.appendChild(h('div', { class: 'big ' + (tr.rate != null ? (diff >= 0 ? 'good' : 'bad') : 'muted'), text: tr.rate != null ? fmt(tr.rate) + '/use' : '–' }));
       summary.appendChild(h('div', { class: 'muted', text: tr.rate != null
         ? fmt(Math.abs(diff)) + '/use ' + (diff >= 0 ? 'cheaper' : 'pricier') + ' than avg reference ' + fmt(tr.avgRef)
-        : 'Nothing counted yet. Include pending items below.' }));
+        : 'Log a cost (groceries, beans) and meals to start.' }));
       summary.appendChild(h('div', { class: 'stats' },
-        h('div', null, h('span', { class: 'muted', text: 'Uses counted' }), h('b', { text: String(tr.countedUses) })),
+        h('div', null, h('span', { class: 'muted', text: 'Uses' }), h('b', { text: String(tr.uses) })),
         h('div', null, h('span', { class: 'muted', text: 'Saved' }), h('b', { text: fmtSigned(tr.saved) })),
-        h('div', null, h('span', { class: 'muted', text: 'Pending costs' }),
-          h('b', { text: fmt(tr.pendingRunning) + ' · ' + tr.pendingUses + ' uses' }),
-          tr.runningPreview != null ? h('span', { class: 'muted small', text: '→ ' + fmt(tr.runningPreview) + '/use' }) : null,
-          h('button', { class: 'mini solid', type: 'button', text: 'Include', disabled: !tr.canIncludeRunning,
-            onclick: function () { act(R.settleRunning, 'Included'); } })),
+        h('div', null, h('span', { class: 'muted', text: 'Running costs' }), h('b', { text: fmt(tr.runningCost) })),
         h('div', null, h('span', { class: 'muted', text: 'Capex' }),
-          h('b', { text: tr.pendingCapex > 0 ? fmt(tr.pendingCapex) + ' pending' : (tr.countedCapex > 0 ? fmt(tr.countedCapex) + ' counted' : '–') }),
+          h('b', { text: tr.pendingCapex > 0 ? fmt(tr.pendingCapex) + ' pending' : (tr.countedCapex > 0 ? fmt(tr.countedCapex) + ' counted' : '\u2013') }),
+          tr.capexPreview != null ? h('span', { class: 'muted small', text: '\u2192 ' + fmt(tr.capexPreview) + '/use' }) : null,
           h('button', { class: 'mini solid', type: 'button', text: 'Include', disabled: !tr.canIncludeCapex,
             onclick: function () { act(R.settleCapex, 'Capex included'); } }))));
     } else {
@@ -371,7 +366,7 @@
     entries.forEach(function (x) {
       var e = x.e, isCost = x.t === 'costs';
       var label = isCost ? (e.kind === 'capex' ? 'Capex' : 'Running') : ('Use' + (e.refName ? ' · ' + e.refName : '') + (e.qty !== 1 ? ' ×' + e.qty : ''));
-      var pending = track && e.settleId == null;
+      var pending = track && isCost && e.kind === 'capex' && e.settleId == null;
       list.appendChild(h('li', null,
         h('div', { class: 'grow' }, h('div', { text: label + (e.note ? ' · ' + e.note : '') }),
           h('div', { class: 'muted', text: e.date + (pending ? ' · pending' : '') })),

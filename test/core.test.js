@@ -24,11 +24,10 @@ assert.strictEqual(bike.mode, 'roi'); assert.deepStrictEqual(bike.references, []
 R.addCost(coffee, { amount: 1500, kind: 'running' });
 for (let i = 0; i < 10; i++) R.addUse(coffee, { value: 189 });
 c = R.calc(coffee);
-// New entries are pending: nothing counted until Include
-assert.strictEqual(c.track.rate, null); assert.strictEqual(c.track.countedUses, 0);
-assert.strictEqual(c.track.pendingRunning, 1500); assert.strictEqual(c.track.pendingUses, 10);
-assert(Math.abs(c.track.runningPreview - 150) < 1e-9);
-assert.strictEqual(c.settledNet, 0);
+// Running costs and uses count immediately: 1500 / 10 uses
+assert.strictEqual(c.track.rate, 150); assert.strictEqual(c.track.uses, 10);
+assert.strictEqual(c.track.avgRef, 189); assert.strictEqual(c.track.saved, 390);
+assert.strictEqual(c.settledNet, 390);
 assert.strictEqual(c.net, 1890 - 1500);
 assert.strictEqual(c.brokeEven, true);
 
@@ -38,7 +37,7 @@ c = R.calc(e);
 assert.strictEqual(c.net, 0); assert.strictEqual(c.progress, null); assert.strictEqual(c.avgValue, null);
 
 // Totals
-assert.strictEqual(R.totals(d).net, (920 - 46200) + 0);
+assert.strictEqual(R.totals(d).net, (920 - 46200) + 390);
 
 // Delete entry
 R.removeEntry(bike, 'costs', bike.costs[1].id);
@@ -67,54 +66,42 @@ const mig = R.validate({ version: 1, items: [{ id: 'm', name: 'Coffee', mode: 't
 assert.deepStrictEqual(mig.items[0].references.map(r => [r.name, r.value]), [['Baseline', 189]]);
 assert.deepStrictEqual(mig.items[0].presets, []);
 
-// Include / Undo: groceries 3000, 6 meals, Include; groceries 2400, 3 meals pending
+// Running costs/uses count immediately; only capex waits for Include
 const d2 = R.emptyData();
 const meals = R.addItem(d2, 'Meals', [], 'track', [{ name: 'Konbini', value: 550 }, { name: 'Restaurant', value: 1200 }]);
 R.addCost(meals, { amount: 3000, kind: 'running', date: '2026-11-01' });
 R.addUse(meals, { value: 550, qty: 4, date: '2026-11-02', refName: 'Konbini' });
 R.addUse(meals, { value: 1200, qty: 2, date: '2026-11-05', refName: 'Restaurant' });
 c = R.calc(meals);
-assert.strictEqual(c.track.canIncludeRunning, true); assert.strictEqual(c.track.canUndo, false);
-assert.strictEqual(R.totals(d2).net, 0);                                   // nothing counted yet
-assert.strictEqual(R.settleRunning(meals), 3);                             // 1 cost + 2 uses
-c = R.calc(meals);
-assert.strictEqual(c.track.rate, 500);                                     // 3000 / 6
-assert.strictEqual(c.track.countedValue, 4 * 550 + 2 * 1200);
+assert.strictEqual(c.track.rate, 500);                                     // 3000 / 6, no button needed
+assert.strictEqual(c.track.saved, 1600); assert.strictEqual(R.totals(d2).net, 1600);
 assert(Math.abs(c.track.avgRef - 4600 / 6) < 1e-9);
-assert.strictEqual(c.track.saved, 1600);
-assert.strictEqual(c.track.canIncludeRunning, false); assert.strictEqual(c.track.canUndo, true);
-assert.strictEqual(R.settleRunning(meals), 0);                             // nothing pending: no-op
-assert.strictEqual(R.totals(d2).net, 1600);
-// Second shop + 3 meals stay pending; preview shows what Include would give
+// A second shop counts right away: the rate jumps, then eases as meals are logged
 R.addCost(meals, { amount: 2400, kind: 'running', date: '2026-11-07' });
+assert.strictEqual(R.calc(meals).track.rate, 5400 / 6);                    // 900
 R.addUse(meals, { value: 550, qty: 3, date: '2026-11-08' });
-c = R.calc(meals);
-assert.strictEqual(c.track.rate, 500);                                     // unchanged until included
-assert.strictEqual(c.track.pendingRunning, 2400); assert.strictEqual(c.track.pendingUses, 3);
-assert(Math.abs(c.track.runningPreview - 5400 / 9) < 1e-9);                // 600
-// Capex is separate: pending until its own Include, cost side only
+assert.strictEqual(R.calc(meals).track.rate, 5400 / 9);                    // 600
+// Capex is pending until Include; cost side only; preview shows the effect
 R.addCost(meals, { amount: 900, kind: 'capex', date: '2026-11-08' });
 c = R.calc(meals);
-assert.strictEqual(c.track.canIncludeCapex, true); assert.strictEqual(c.track.pendingCapex, 900);
+assert.strictEqual(c.track.rate, 600); assert.strictEqual(c.track.pendingCapex, 900);
+assert.strictEqual(c.track.canIncludeCapex, true); assert.strictEqual(c.track.canUndo, false);
+assert(Math.abs(c.track.capexPreview - 6300 / 9) < 1e-9);                  // 700
+assert.strictEqual(c.settledNet, c.track.value - 5400);                    // pending capex not in totals
 assert.strictEqual(R.settleCapex(meals), 1);
 c = R.calc(meals);
-assert.strictEqual(c.track.countedCapex, 900); assert.strictEqual(c.track.countedUses, 6);
-assert.strictEqual(c.track.rate, 3900 / 6);                                // 650
-assert.strictEqual(R.settleCapex(meals), 0);
-// Undo reverts only the most recent Include (capex), then the one before
-assert.strictEqual(R.undoSettle(meals), 'capex'); assert.strictEqual(R.calc(meals).track.rate, 500);
-assert.strictEqual(R.calc(meals).track.pendingCapex, 900);
-assert.strictEqual(R.settleRunning(meals), 2);                             // 1 cost + 1 use line
-c = R.calc(meals);
-assert.strictEqual(c.track.rate, 5400 / 9);                                // 600
-assert.strictEqual(R.undoSettle(meals), 'running'); assert.strictEqual(R.calc(meals).track.rate, 500);
-assert.strictEqual(R.undoSettle(meals), 'running'); assert.strictEqual(R.calc(meals).track.rate, null);
-assert.strictEqual(R.undoSettle(meals), null);                             // nothing left to undo
-// No purchases at all: uses are pending, nothing to include on the cost side but uses can be
+assert.strictEqual(c.track.countedCapex, 900); assert.strictEqual(c.track.rate, 700);
+assert.strictEqual(c.track.canIncludeCapex, false); assert.strictEqual(c.track.canUndo, true);
+assert.strictEqual(R.settleCapex(meals), 0);                               // nothing pending: no-op
+// Undo reverts the include; a second undo has nothing left
+assert.strictEqual(R.undoSettle(meals), true);
+c = R.calc(meals); assert.strictEqual(c.track.rate, 600); assert.strictEqual(c.track.pendingCapex, 900);
+assert.strictEqual(R.undoSettle(meals), false);
+// Uses but no costs: no rate (not a misleading 0/use)
 const bare = R.addItem(d2, 'Bare', [], 'track', [{ name: 'Baseline', value: 100 }]);
 R.addUse(bare, { value: 100, qty: 2 });
 assert.strictEqual(R.calc(bare).track.rate, null); assert.strictEqual(R.calc(bare).count, 2);
-assert.strictEqual(R.calc(bare).track.pendingUses, 2);
+assert.strictEqual(R.calc(bare).track.uses, 2);
 // Round-trip with refName
 const st2 = mem(); R.save(d2, st2);
 assert.strictEqual(R.load(st2).data.items[0].uses[0].refName, 'Konbini');
@@ -124,9 +111,9 @@ const stI = mem(); R.save(d2, stI);
 const lm = R.load(stI).data.items.find(i => i.name === 'Meals');
 assert.deepStrictEqual(lm.settles, meals.settles); assert.strictEqual(lm.settleSeq, meals.settleSeq);
 assert.deepStrictEqual(lm.costs.map(x => x.settleId), meals.costs.map(x => x.settleId));
-// Old data (no settle fields) loads as pending
+// Old data (no settle fields): running/uses count, capex pending
 const oldT = R.validate({ version: 1, items: [{ id: 't', name: 'T', mode: 'track', references: [{ id: 'r', name: 'A', value: 100 }], costs: [{ id: 'c', date: '2026-01-01', amount: 500, kind: 'running' }], uses: [{ id: 'u', date: '2026-01-02', value: 100, qty: 2 }] }] });
-assert.strictEqual(R.calc(oldT.items[0]).track.pendingUses, 2); assert.strictEqual(R.calc(oldT.items[0]).track.rate, null);
+assert.strictEqual(R.calc(oldT.items[0]).track.uses, 2); assert.strictEqual(R.calc(oldT.items[0]).track.rate, 250);
 
 // References parsing
 assert.deepStrictEqual(R.parseReferences('Konbini 550, Restaurant 1200'), [{ name: 'Konbini', value: 550 }, { name: 'Restaurant', value: 1200 }]);
