@@ -57,48 +57,84 @@
       brokeEven: invested > 0 && value >= invested,
       avgValue: count > 0 ? value / count : null
     };
-    // What counts toward totals: ROI items use everything; Tracking items use closed batches only.
+    // What counts toward totals: ROI items use everything; Tracking items use counted entries only.
     out.settledValue = value; out.settledCost = invested; out.settledNet = out.net;
     if (item.mode === 'track') {
-      var t = batches(item);
+      var t = trackStats(item);
       out.track = t;
-      out.settledValue = t.closedValue;
-      out.settledCost = t.closedCost + capex;
-      out.settledNet = t.closedValue - t.closedCost - capex;
+      out.settledValue = t.countedValue;
+      out.settledCost = t.countedCost;
+      out.settledNet = t.countedValue - t.countedCost;
     }
     return out;
   }
 
-  // Tracking items: a batch = meals logged from one running-cost date until the next one.
-  // Only closed batches (followed by a later purchase) feed the per-meal rate, so a fresh
-  // grocery run does not inflate the rate before the food is eaten. Capex is excluded.
-  function batches(item) {
-    var byDate = {};
+  // Tracking items: entries are pending until you press Include. Running Unit Cost =
+  // counted costs (running + capex) / counted uses. Including is manual, so a fresh grocery
+  // run never distorts the number until you choose to count it.
+  function trackStats(item) {
+    var t = { countedRunning: 0, countedCapex: 0, countedUses: 0, countedValue: 0,
+      pendingRunning: 0, pendingCapex: 0, pendingUses: 0, pendingValue: 0 };
     (item.costs || []).forEach(function (c) {
-      if (c.kind === 'running') byDate[c.date] = (byDate[c.date] || 0) + c.amount;
+      var counted = c.settleId != null;
+      if (c.kind === 'capex') { if (counted) t.countedCapex += c.amount; else t.pendingCapex += c.amount; }
+      else { if (counted) t.countedRunning += c.amount; else t.pendingRunning += c.amount; }
     });
-    var groups = Object.keys(byDate).sort().map(function (d) {
-      return { date: d, cost: byDate[d], meals: 0, value: 0 };
-    });
-    var unassigned = 0;
     (item.uses || []).forEach(function (u) {
-      var idx = -1;
-      for (var i = 0; i < groups.length; i++) { if (groups[i].date <= u.date) idx = i; else break; }
-      if (idx < 0) unassigned += u.qty;
-      else { groups[idx].meals += u.qty; groups[idx].value += u.value * u.qty; }
+      if (u.settleId != null) { t.countedUses += u.qty; t.countedValue += u.value * u.qty; }
+      else { t.pendingUses += u.qty; t.pendingValue += u.value * u.qty; }
     });
-    var closed = groups.slice(0, -1);
-    var open = groups.length ? groups[groups.length - 1] : null;
-    var cc = 0, cm = 0, cv = 0;
-    closed.forEach(function (g) { cc += g.cost; cm += g.meals; cv += g.value; });
-    return {
-      closedBatches: closed.length, closedCost: cc, closedMeals: cm, closedValue: cv,
-      rate: cm > 0 ? cc / cm : null,           // cost per meal over closed batches
-      avgRef: cm > 0 ? cv / cm : null,         // average reference price of those meals
-      savedClosed: cv - cc,
-      hasOpen: !!open, openCost: open ? open.cost : 0, openMeals: open ? open.meals : 0, openValue: open ? open.value : 0,
-      openSince: open ? open.date : null, unassigned: unassigned
-    };
+    t.countedCost = t.countedRunning + t.countedCapex;
+    t.rate = t.countedUses > 0 ? t.countedCost / t.countedUses : null;      // Running Unit Cost
+    t.avgRef = t.countedUses > 0 ? t.countedValue / t.countedUses : null;   // avg reference price
+    t.saved = t.countedValue - t.countedCost;
+    // What the rate would be after pressing Include on the running side
+    var d = t.countedUses + t.pendingUses;
+    t.runningPreview = d > 0 && (t.pendingRunning > 0 || t.pendingUses > 0) ? (t.countedCost + t.pendingRunning) / d : null;
+    t.canIncludeRunning = t.pendingRunning > 0 || t.pendingUses > 0;
+    t.canIncludeCapex = t.pendingCapex > 0;
+    t.canUndo = (item.settles || []).length > 0;
+    return t;
+  }
+
+  /* ---------- Include / Undo (Tracking) ---------- */
+
+  function nextSettleId(item) {
+    item.settleSeq = (item.settleSeq || 0) + 1;
+    return item.settleSeq;
+  }
+
+  // Count all pending running costs and pending uses. Returns how many entries changed.
+  function settleRunning(item) {
+    var pend = [];
+    item.costs.forEach(function (c) { if (c.kind === 'running' && c.settleId == null) pend.push(c); });
+    item.uses.forEach(function (u) { if (u.settleId == null) pend.push(u); });
+    if (!pend.length) return 0;
+    var id = nextSettleId(item);
+    pend.forEach(function (e) { e.settleId = id; });
+    item.settles = (item.settles || []).concat([{ id: id, kind: 'running' }]);
+    return pend.length;
+  }
+
+  // Count all pending capex (cost side only; uses unchanged).
+  function settleCapex(item) {
+    var pend = item.costs.filter(function (c) { return c.kind === 'capex' && c.settleId == null; });
+    if (!pend.length) return 0;
+    var id = nextSettleId(item);
+    pend.forEach(function (e) { e.settleId = id; });
+    item.settles = (item.settles || []).concat([{ id: id, kind: 'capex' }]);
+    return pend.length;
+  }
+
+  // Revert the most recent Include. Returns the kind that was undone, or null.
+  function undoSettle(item) {
+    var st = item.settles || [];
+    if (!st.length) return null;
+    var last = st[st.length - 1];
+    item.costs.forEach(function (c) { if (c.settleId === last.id) c.settleId = null; });
+    item.uses.forEach(function (u) { if (u.settleId === last.id) u.settleId = null; });
+    item.settles = st.slice(0, -1);
+    return last.kind;
   }
 
   function totals(data) {
@@ -112,6 +148,10 @@
   }
 
   /* ---------- validation (used on load and import) ---------- */
+
+  function cleanSettle(x) {
+    return typeof x === 'number' && isFinite(x) && x > 0 && Math.floor(x) === x ? x : null;
+  }
 
   function cleanItem(raw) {
     if (!raw || typeof raw !== 'object') return null;
@@ -145,7 +185,7 @@
       if (!c || typeof c.id !== 'string' || !num(c.amount) || c.amount < 0 ||
           !isDate(c.date) || (c.kind !== 'capex' && c.kind !== 'running')) return null;
       item.costs.push({ id: c.id, date: c.date, amount: c.amount, kind: c.kind,
-        note: typeof c.note === 'string' ? c.note : '' });
+        note: typeof c.note === 'string' ? c.note : '', settleId: cleanSettle(c.settleId) });
     }
     for (var j = 0; j < raw.uses.length; j++) {
       var u = raw.uses[j];
@@ -153,7 +193,20 @@
           !num(u.qty) || u.qty <= 0 || !isDate(u.date)) return null;
       item.uses.push({ id: u.id, date: u.date, value: u.value, qty: u.qty,
         note: typeof u.note === 'string' ? u.note : '',
-        refName: typeof u.refName === 'string' ? u.refName.slice(0, 30) : '' });
+        refName: typeof u.refName === 'string' ? u.refName.slice(0, 30) : '', settleId: cleanSettle(u.settleId) });
+    }
+    if (mode === 'track') {
+      var maxId = 0;
+      item.costs.concat(item.uses).forEach(function (e) { if (e.settleId > maxId) maxId = e.settleId; });
+      item.settles = [];
+      if (Array.isArray(raw.settles)) {
+        raw.settles.forEach(function (x) {
+          if (x && cleanSettle(x.id) != null && (x.kind === 'running' || x.kind === 'capex')) {
+            item.settles.push({ id: x.id, kind: x.kind }); if (x.id > maxId) maxId = x.id;
+          }
+        });
+      }
+      item.settleSeq = Math.max(maxId, cleanSettle(raw.settleSeq) || 0);
     }
     return item;
   }
@@ -202,6 +255,7 @@
     var it = { id: uid(), name: name.trim(), mode: track ? 'track' : 'roi',
       references: track ? (refs || []).map(function (r) { return { id: uid(), name: r.name, value: r.value }; }) : [],
       presets: track ? [] : (presets || []), costs: [], uses: [] };
+    if (track) { it.settles = []; it.settleSeq = 0; }
     data.items.push(it);
     return it;
   }
@@ -212,12 +266,12 @@
   }
 
   function addCost(item, o) {
-    item.costs.push({ id: uid(), date: o.date || today(), amount: o.amount, kind: o.kind, note: o.note || '' });
+    item.costs.push({ id: uid(), date: o.date || today(), amount: o.amount, kind: o.kind, note: o.note || '', settleId: null });
   }
 
   function addUse(item, o) {
     item.uses.push({ id: uid(), date: o.date || today(), value: o.value, qty: o.qty || 1, note: o.note || '',
-      refName: o.refName || '' });
+      refName: o.refName || '', settleId: null });
   }
 
   function removeEntry(item, listName, id) {
@@ -312,6 +366,7 @@
     calc: calc, totals: totals, validate: validate, load: load, save: save,
     addItem: addItem, findItem: findItem, addCost: addCost, addUse: addUse,
     removeEntry: removeEntry, removeItem: removeItem, parsePresets: parsePresets,
+    settleRunning: settleRunning, settleCapex: settleCapex, undoSettle: undoSettle,
     parseReferences: parseReferences, refsToText: refsToText, setReferences: setReferences,
     FKEY: FKEY, loadFeedback: loadFeedback, saveFeedback: saveFeedback, addNote: addNote, formatFeedback: formatFeedback
   };

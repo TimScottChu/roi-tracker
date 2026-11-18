@@ -85,3 +85,20 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
 textarea { width: 100%; margin-top: 2px; padding: 8px 10px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
 dialog { max-height: 85vh; overflow: auto; }
 .hist .note { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* v2.4: pinned summary, History in its own scroll panel */
+body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; padding-bottom: 0; }
+.top, .banner { flex: none; }
+main { flex: 1; min-height: 0; overflow-y: auto; width: 100%; }
+main.fixed { display: flex; flex-direction: column; overflow: hidden; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+main.fixed .card { flex: none; margin-bottom: 8px; }
+main.fixed .hist-card { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-bottom: 0; }
+.hist-card .scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.row-tools { display: inline-flex; align-items: center; gap: 8px; }
+.mini { min-height: 32px; padding: 0 12px; border-radius: 16px; border: 1px solid var(--accent); background: transparent; color: var(--accent); font: inherit; font-size: .85rem; font-weight: 600; }
+.mini.solid { background: var(--accent); color: var(--accent-ink); margin-top: 6px; }
+.mini:disabled { opacity: .4; }
+.small { font-size: .78rem; display: block; }
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+.stats div { padding: 6px 8px; }
+main.fixed .big { font-size: 1.5rem; }
