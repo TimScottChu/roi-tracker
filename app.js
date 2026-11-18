@@ -98,6 +98,7 @@
   function renderList() {
     titleEl.textContent = 'ROI Tracker';
     backBtn.hidden = true;
+    app.className = '';
     app.replaceChildren();
 
     if (data.items.length) {
@@ -121,18 +122,15 @@
       var c = R.calc(it);
       var sub, right;
       if (it.mode === 'track') {
-        var tr = c.track;
+        var tr = c.track, pend = tr.pendingUses > 0 ? ' · ' + tr.pendingUses + ' pending' : '';
         if (tr.rate != null) {
           right = h('span', { class: 'big ' + (tr.rate <= tr.avgRef ? 'good' : 'bad'), text: fmt(tr.rate) + '/use' });
-          sub = tr.closedMeals + ' uses · saved ' + fmtSigned(tr.savedClosed) + ' · ' + (tr.hasOpen ? tr.openMeals + ' in progress' : 'avg ref ' + fmt(tr.avgRef));
+          sub = tr.countedUses + ' uses · saved ' + fmtSigned(tr.saved) + pend;
         } else {
-          if (tr.hasOpen && tr.openMeals > 0) {
-            right = h('span', { class: 'big muted', text: '~' + fmt(tr.openCost / tr.openMeals) + '/use' });
-            sub = 'Provisional · ' + tr.openMeals + ' uses so far in the first batch';
-          } else {
-            right = h('span', { class: 'big muted', text: '–' });
-            sub = tr.hasOpen ? 'First batch in progress · no uses logged yet' : 'Log a running cost (groceries, beans) to start';
-          }
+          right = h('span', { class: 'big muted', text: '–' });
+          sub = (tr.canIncludeRunning || tr.canIncludeCapex)
+            ? 'Pending ' + fmt(tr.pendingRunning + tr.pendingCapex) + ' · ' + tr.pendingUses + ' uses. Open to include.'
+            : 'Log a cost (groceries, beans) and meals to start';
         }
       } else if (c.invested === 0) sub = 'No costs yet';
       else if (c.brokeEven) sub = 'Paid off ✓ ' + c.count + ' uses';
@@ -193,78 +191,40 @@
     if (persist()) location.hash = '#/item/' + it.id;
   }
 
-  function renderDetail(id) {
-    var it = R.findItem(data, id);
-    if (!it) { location.hash = '#/'; return; }
-    var c = R.calc(it);
-    titleEl.textContent = it.name;
-    backBtn.hidden = false;
-    app.replaceChildren();
+  /* ---------- pop-up sheet for forms (keeps the item screen from scrolling) ---------- */
+  var sheet = document.getElementById('sheet');
+  document.getElementById('sheet-close').addEventListener('click', function () { sheet.close(); });
+  function openSheet(title, node) {
+    document.getElementById('sheet-title').textContent = title;
+    document.getElementById('sheet-body').replaceChildren(node);
+    sheet.showModal();
+  }
 
-    /* summary */
+  function costForm(it, id) {
     var track = it.mode === 'track';
-    var stats, status, headline, headCls = '', headLabel;
-    if (track) {
-      var tr = c.track;
-      headLabel = 'Cost per use (closed batches)';
-      headline = tr.rate != null ? fmt(tr.rate) : '–';
-      if (tr.rate != null) {
-        var diff = tr.avgRef - tr.rate;
-        headCls = diff >= 0 ? 'good' : 'bad';
-        status = fmt(Math.abs(diff)) + ' per use ' + (diff >= 0 ? 'cheaper' : 'pricier') + ' than your references (avg ' + fmt(tr.avgRef) + ')';
-      } else if (tr.hasOpen && tr.openMeals > 0) {
-        headLabel = 'Cost per use (so far, provisional)';
-        headline = '~' + fmt(tr.openCost / tr.openMeals); headCls = 'muted';
-        status = 'This shop\'s cost ÷ uses so far (avg reference ' + fmt(tr.openValue / tr.openMeals) + '). It falls as you eat more of it. Log your next shop to lock the final rate.';
-      } else if (tr.hasOpen) status = 'No uses logged yet. Log a meal, or your next shop to close this batch.';
-      else status = 'Log a running cost (groceries, beans) to start.';
-      stats = h('div', { class: 'stats' },
-        h('div', null, h('span', { class: 'muted', text: 'Uses logged' }), h('b', { text: String(c.count) })),
-        h('div', null, h('span', { class: 'muted', text: 'Saved (closed batches)' }), h('b', { text: fmtSigned(tr.savedClosed) })),
-        h('div', null, h('span', { class: 'muted', text: 'Closed batches' }), h('b', { text: String(tr.closedBatches) + ' · ' + tr.closedMeals + ' uses' })),
-        h('div', null, h('span', { class: 'muted', text: 'In progress' }),
-          h('b', { text: tr.hasOpen ? fmt(tr.openCost) + ' · ' + tr.openMeals + ' uses since ' + tr.openSince + (tr.openMeals > 0 ? ' (~' + fmt(tr.openCost / tr.openMeals) + '/use so far)' : '') : '–' })));
-      if (c.capex) stats.appendChild(h('div', null, h('span', { class: 'muted', text: 'Capex (not in per-use cost)' }), h('b', { text: fmt(c.capex) })));
-      if (tr.unassigned) stats.appendChild(h('div', null, h('span', { class: 'muted', text: 'Before first purchase' }), h('b', { text: tr.unassigned + ' uses (not counted)' })));
-    } else {
-      headLabel = 'Net';
-      headline = fmtSigned(c.net); headCls = cls(c.net);
-      status = c.invested === 0 ? 'Add a cost to start' :
-        c.brokeEven ? 'Paid off' : Math.round(c.progress * 100) + '% to break-even · ' + fmt(c.remaining) + ' to go';
-      stats = h('div', { class: 'stats' },
-        h('div', null, h('span', { class: 'muted', text: 'Saved' }), h('b', { text: fmt(c.value) })),
-        h('div', null, h('span', { class: 'muted', text: 'Spent' }), h('b', { text: fmt(c.invested) + (c.capex && c.running ? ' (capex ' + fmt(c.capex) + ')' : '') })),
-        h('div', null, h('span', { class: 'muted', text: 'Uses' }), h('b', { text: String(c.count) })),
-        h('div', null, h('span', { class: 'muted', text: 'Avg value / use' }), h('b', { text: c.avgValue == null ? '–' : fmt(c.avgValue) })));
-    }
-    app.appendChild(h('div', { class: 'card' },
-      h('div', { class: 'row' }, h('span', { class: 'muted', text: headLabel }),
-        h('span', { class: 'tag', text: track ? 'Tracking' : 'ROI' })),
-      h('div', { class: 'big ' + headCls, text: headline }),
-      h('div', { class: 'muted ' + headCls, text: status }),
-      track ? null : progressBar(c), stats));
+    return h('form', { onsubmit: function (e) {
+      e.preventDefault();
+      var f = e.target, a = Number(val(f, 'amount'));
+      if (!isFinite(a) || a < 0) { toast('Invalid amount'); return; }
+      R.addCost(it, { amount: a, kind: val(f, 'kind'), date: val(f, 'date'), note: val(f, 'note') });
+      if (persist()) { sheet.close(); toast(track ? 'Cost added (pending)' : 'Cost added'); renderDetail(id); }
+    } },
+      h('div', { class: 'grid2' }, field('Amount', numInput('amount', '3000')),
+        field('Type', (function () {
+          var sel = h('select', { name: 'kind' },
+            h('option', { value: 'running', text: 'Running (groceries, beans)' }),
+            h('option', { value: 'capex', text: 'Capex (one-off purchase)' }));
+          sel.value = track ? 'running' : 'capex';
+          return sel;
+        })())),
+      h('div', { class: 'grid2' }, field('Date', dateInput('date')),
+        field('Note (optional)', h('input', { name: 'note', maxlength: '80' }))),
+      h('button', { class: 'btn', type: 'submit', text: 'Add cost' }));
+  }
 
-    /* log use */
-    var useCard = h('div', { class: 'card' }, h('h2', { text: 'Log a use' }));
-    var chips = h('div', { class: 'chips' });
-    if (track) {
-      it.references.forEach(function (r) {
-        chips.appendChild(h('button', { class: 'chip', type: 'button', text: r.name + ' ' + fmt(r.value), onclick: function () {
-          R.addUse(it, { value: r.value, qty: 1, refName: r.name });
-          if (persist()) { toast('Logged vs ' + r.name); renderDetail(id); }
-        } }));
-      });
-      if (!it.references.length) useCard.appendChild(h('p', { class: 'muted', text: 'Add reference prices under Edit item.' }));
-    } else {
-      it.presets.forEach(function (p) {
-        chips.appendChild(h('button', { class: 'chip', type: 'button', text: '+' + fmt(p), onclick: function () {
-          R.addUse(it, { value: p, qty: 1 });
-          if (persist()) { toast('Logged ' + fmt(p)); renderDetail(id); }
-        } }));
-      });
-    }
-    if (chips.childNodes.length) useCard.appendChild(chips);
-    var uf = h('form', { onsubmit: function (e) {
+  function useForm(it, id) {
+    var track = it.mode === 'track';
+    return h('form', { onsubmit: function (e) {
       e.preventDefault();
       var f = e.target, q = Number(val(f, 'qty') || 1), v, refName = '';
       if (track) {
@@ -274,7 +234,7 @@
       } else v = Number(val(f, 'value'));
       if (!isFinite(v) || v < 0 || !isFinite(q) || q <= 0) { toast('Check value and quantity'); return; }
       R.addUse(it, { value: v, qty: q, date: val(f, 'date'), note: val(f, 'note'), refName: refName });
-      if (persist()) { toast('Logged ' + q + ' use' + (q === 1 ? '' : 's')); renderDetail(id); }
+      if (persist()) { sheet.close(); toast('Logged ' + q + ' use' + (q === 1 ? '' : 's')); renderDetail(id); }
     } },
       h('div', { class: 'grid2' },
         track ? field('Reference', (function () {
@@ -285,49 +245,10 @@
         field('Quantity', h('input', { name: 'qty', type: 'number', inputmode: 'decimal', min: '0.01', step: 'any', value: '1', required: true }))),
       h('div', { class: 'grid2' }, field('Date', dateInput('date')),
         field('Note (optional)', h('input', { name: 'note', maxlength: '80' }))),
-      h('button', { class: 'btn secondary', type: 'submit', text: track ? 'Log uses' : 'Log custom use' }));
-    useCard.appendChild(h('details', { open: !chips.childNodes.length }, h('summary', { text: track ? 'Several uses / past date' : 'Custom amount' }), uf));
-    app.appendChild(useCard);
+      h('button', { class: 'btn', type: 'submit', text: 'Log uses' }));
+  }
 
-    /* add cost */
-    var cf = h('form', { onsubmit: function (e) {
-      e.preventDefault();
-      var f = e.target, a = Number(val(f, 'amount'));
-      if (!isFinite(a) || a < 0) { toast('Invalid amount'); return; }
-      R.addCost(it, { amount: a, kind: val(f, 'kind'), date: val(f, 'date'), note: val(f, 'note') });
-      if (persist()) { toast('Cost added'); renderDetail(id); }
-    } },
-      h('div', { class: 'grid2' }, field('Amount', numInput('amount', '1200')),
-        field('Type', h('select', { name: 'kind' },
-          h('option', { value: 'capex', text: 'Capex' }), h('option', { value: 'running', text: 'Running' })))),
-      h('div', { class: 'grid2' }, field('Date', dateInput('date')),
-        field('Note (optional)', h('input', { name: 'note', maxlength: '80', placeholder: 'Air pump' }))),
-      h('button', { class: 'btn secondary', type: 'submit', text: 'Add cost' }));
-    app.appendChild(h('details', { class: 'card' }, h('summary', { text: 'Add a cost' }), cf));
-
-    /* history */
-    var entries = [];
-    it.costs.forEach(function (x) { entries.push({ t: 'costs', e: x }); });
-    it.uses.forEach(function (x) { entries.push({ t: 'uses', e: x }); });
-    entries.sort(function (a, b) { return a.e.date < b.e.date ? 1 : a.e.date > b.e.date ? -1 : (a.e.id < b.e.id ? 1 : -1); });
-    var list = h('ul', { class: 'hist' });
-    entries.forEach(function (x) {
-      var e = x.e, isCost = x.t === 'costs';
-      var label = isCost ? (e.kind === 'capex' ? 'Capex' : 'Running') : ('Use' + (e.refName ? ' · ' + e.refName : '') + (e.qty !== 1 ? ' ×' + e.qty : ''));
-      var amount = isCost ? e.amount : e.value * e.qty;
-      list.appendChild(h('li', null,
-        h('div', { class: 'grow' }, h('div', { text: label + (e.note ? ' · ' + e.note : '') }), h('div', { class: 'muted', text: e.date })),
-        h('span', { class: 'amt ' + (isCost ? 'bad' : 'good'), text: (isCost ? '−' : '+') + fmt(amount) }),
-        h('button', { type: 'button', 'aria-label': 'Delete entry', text: '✕', onclick: function () {
-          if (!confirm('Delete this entry?')) return;
-          R.removeEntry(it, x.t, e.id);
-          if (persist()) renderDetail(id);
-        } })));
-    });
-    app.appendChild(h('div', { class: 'card' }, h('h2', { text: 'History' }),
-      entries.length ? list : h('p', { class: 'muted', text: 'Nothing logged yet.' })));
-
-    /* edit / delete item */
+  function editForm(it, id) {
     var ef = h('form', { onsubmit: function (e) {
       e.preventDefault();
       var f = e.target, m = val(f, 'mode');
@@ -335,13 +256,14 @@
         var refs = R.parseReferences(val(f, 'refs'));
         if (!refs || !refs.length) { toast('Enter reference prices like "Konbini 550"'); return; }
         R.setReferences(it, refs); it.presets = [];
+        if (!it.settles) { it.settles = []; it.settleSeq = 0; }
       } else {
         var p = R.parsePresets(val(f, 'presets'));
         if (!p) { toast('Quick-tap values must be numbers'); return; }
         it.presets = p; it.references = [];
       }
       it.mode = m; it.name = val(f, 'name').trim();
-      if (persist()) { toast('Saved (past entries keep their values)'); renderDetail(id); }
+      if (persist()) { sheet.close(); toast('Saved (past entries keep their values)'); renderDetail(id); }
     } },
       modeToggle(it.mode),
       field('Name', h('input', { name: 'name', required: true, maxlength: '60', value: it.name })),
@@ -349,14 +271,119 @@
         field('Quick-tap savings per use (comma separated)', h('input', { name: 'presets', value: it.mode === 'roi' ? it.presets.join(', ') : '' }))),
       h('div', { 'data-for': 'track' },
         field('Reference prices (name price, comma separated)', h('input', { name: 'refs', value: R.refsToText(it.references) }))),
-      h('button', { class: 'btn secondary', type: 'submit', text: 'Save changes' }),
+      h('button', { class: 'btn', type: 'submit', text: 'Save changes' }),
       h('button', { class: 'btn danger', type: 'button', text: 'Delete item', onclick: function () {
         if (!confirm('Delete "' + it.name + '" and all its entries?')) return;
         R.removeItem(data, it.id);
-        if (persist()) location.hash = '#/';
+        if (persist()) { sheet.close(); location.hash = '#/'; }
       } }));
     wireMode(ef);
-    app.appendChild(h('details', { class: 'card' }, h('summary', { text: 'Edit item' }), ef));
+    return ef;
+  }
+
+  function renderDetail(id) {
+    var it = R.findItem(data, id);
+    if (!it) { location.hash = '#/'; return; }
+    var c = R.calc(it), track = it.mode === 'track';
+    titleEl.textContent = it.name;
+    backBtn.hidden = false;
+    app.className = 'fixed';
+    app.replaceChildren();
+
+    function act(fn, msg) {
+      var n = fn(it);
+      if (n && persist()) { toast(msg); renderDetail(id); }
+    }
+
+    /* pinned summary */
+    var summary = h('div', { class: 'card' });
+    if (track) {
+      var tr = c.track, diff = tr.rate != null ? tr.avgRef - tr.rate : 0;
+      summary.appendChild(h('div', { class: 'row' }, h('span', { class: 'muted', text: 'Running Unit Cost' }),
+        h('span', { class: 'row-tools' },
+          tr.canUndo ? h('button', { class: 'mini', type: 'button', text: 'Undo include', onclick: function () {
+            var k = R.undoSettle(it); if (k && persist()) { toast('Undid last include (' + k + ')'); renderDetail(id); }
+          } }) : null,
+          h('span', { class: 'tag', text: 'Tracking' }))));
+      summary.appendChild(h('div', { class: 'big ' + (tr.rate != null ? (diff >= 0 ? 'good' : 'bad') : 'muted'), text: tr.rate != null ? fmt(tr.rate) + '/use' : '–' }));
+      summary.appendChild(h('div', { class: 'muted', text: tr.rate != null
+        ? fmt(Math.abs(diff)) + '/use ' + (diff >= 0 ? 'cheaper' : 'pricier') + ' than avg reference ' + fmt(tr.avgRef)
+        : 'Nothing counted yet. Include pending items below.' }));
+      summary.appendChild(h('div', { class: 'stats' },
+        h('div', null, h('span', { class: 'muted', text: 'Uses counted' }), h('b', { text: String(tr.countedUses) })),
+        h('div', null, h('span', { class: 'muted', text: 'Saved' }), h('b', { text: fmtSigned(tr.saved) })),
+        h('div', null, h('span', { class: 'muted', text: 'Pending costs' }),
+          h('b', { text: fmt(tr.pendingRunning) + ' · ' + tr.pendingUses + ' uses' }),
+          tr.runningPreview != null ? h('span', { class: 'muted small', text: '→ ' + fmt(tr.runningPreview) + '/use' }) : null,
+          h('button', { class: 'mini solid', type: 'button', text: 'Include', disabled: !tr.canIncludeRunning,
+            onclick: function () { act(R.settleRunning, 'Included'); } })),
+        h('div', null, h('span', { class: 'muted', text: 'Capex' }),
+          h('b', { text: tr.pendingCapex > 0 ? fmt(tr.pendingCapex) + ' pending' : (tr.countedCapex > 0 ? fmt(tr.countedCapex) + ' counted' : '–') }),
+          h('button', { class: 'mini solid', type: 'button', text: 'Include', disabled: !tr.canIncludeCapex,
+            onclick: function () { act(R.settleCapex, 'Capex included'); } }))));
+    } else {
+      var status = c.invested === 0 ? 'Add a cost to start' :
+        c.brokeEven ? 'Paid off' : Math.round(c.progress * 100) + '% to break-even · ' + fmt(c.remaining) + ' to go';
+      summary.appendChild(h('div', { class: 'row' }, h('span', { class: 'muted', text: 'Net' }), h('span', { class: 'tag', text: 'ROI' })));
+      summary.appendChild(h('div', { class: 'big ' + cls(c.net), text: fmtSigned(c.net) }));
+      summary.appendChild(h('div', { class: 'muted', text: status }));
+      summary.appendChild(progressBar(c));
+      summary.appendChild(h('div', { class: 'stats' },
+        h('div', null, h('span', { class: 'muted', text: 'Saved' }), h('b', { text: fmt(c.value) })),
+        h('div', null, h('span', { class: 'muted', text: 'Spent' }), h('b', { text: fmt(c.invested) + (c.capex && c.running ? ' (capex ' + fmt(c.capex) + ')' : '') })),
+        h('div', null, h('span', { class: 'muted', text: 'Uses' }), h('b', { text: String(c.count) })),
+        h('div', null, h('span', { class: 'muted', text: 'Avg value / use' }), h('b', { text: c.avgValue == null ? '–' : fmt(c.avgValue) }))));
+    }
+    app.appendChild(summary);
+
+    /* log buttons */
+    var logCard = h('div', { class: 'card' });
+    var chips = h('div', { class: 'chips' });
+    if (track) {
+      it.references.forEach(function (r) {
+        chips.appendChild(h('button', { class: 'chip', type: 'button', text: r.name + ' ' + fmt(r.value), onclick: function () {
+          R.addUse(it, { value: r.value, qty: 1, refName: r.name });
+          if (persist()) { toast('Logged vs ' + r.name); renderDetail(id); }
+        } }));
+      });
+      if (!it.references.length) logCard.appendChild(h('p', { class: 'muted', text: 'Add reference prices under Edit.' }));
+    } else {
+      it.presets.forEach(function (p) {
+        chips.appendChild(h('button', { class: 'chip', type: 'button', text: '+' + fmt(p), onclick: function () {
+          R.addUse(it, { value: p, qty: 1 });
+          if (persist()) { toast('Logged ' + fmt(p)); renderDetail(id); }
+        } }));
+      });
+    }
+    if (chips.childNodes.length) logCard.appendChild(chips);
+    logCard.appendChild(h('div', { class: 'toolbar' },
+      h('button', { class: 'mini', type: 'button', text: '+ Cost', onclick: function () { openSheet('Add a cost', costForm(it, id)); } }),
+      h('button', { class: 'mini', type: 'button', text: track ? '+ Several uses' : '+ Custom use', onclick: function () { openSheet('Log uses', useForm(it, id)); } }),
+      h('button', { class: 'mini', type: 'button', text: 'Edit', onclick: function () { openSheet('Edit item', editForm(it, id)); } })));
+    app.appendChild(logCard);
+
+    /* history: its own scroll panel */
+    var entries = [];
+    it.costs.forEach(function (x) { entries.push({ t: 'costs', e: x }); });
+    it.uses.forEach(function (x) { entries.push({ t: 'uses', e: x }); });
+    entries.sort(function (a, b) { return a.e.date < b.e.date ? 1 : a.e.date > b.e.date ? -1 : (a.e.id < b.e.id ? 1 : -1); });
+    var list = h('ul', { class: 'hist scroll' });
+    entries.forEach(function (x) {
+      var e = x.e, isCost = x.t === 'costs';
+      var label = isCost ? (e.kind === 'capex' ? 'Capex' : 'Running') : ('Use' + (e.refName ? ' · ' + e.refName : '') + (e.qty !== 1 ? ' ×' + e.qty : ''));
+      var pending = track && e.settleId == null;
+      list.appendChild(h('li', null,
+        h('div', { class: 'grow' }, h('div', { text: label + (e.note ? ' · ' + e.note : '') }),
+          h('div', { class: 'muted', text: e.date + (pending ? ' · pending' : '') })),
+        h('span', { class: 'amt ' + (isCost ? 'bad' : 'good'), text: (isCost ? '−' : '+') + fmt(isCost ? e.amount : e.value * e.qty) }),
+        h('button', { type: 'button', 'aria-label': 'Delete entry', text: '✕', onclick: function () {
+          if (!confirm('Delete this entry?')) return;
+          R.removeEntry(it, x.t, e.id);
+          if (persist()) renderDetail(id);
+        } })));
+    });
+    app.appendChild(h('div', { class: 'card hist-card' }, h('h2', { text: 'History' }),
+      entries.length ? list : h('p', { class: 'muted', text: 'Nothing logged yet.' })));
   }
 
   /* ---------- routing ---------- */
